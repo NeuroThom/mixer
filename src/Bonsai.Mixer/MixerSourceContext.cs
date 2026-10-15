@@ -12,7 +12,7 @@ namespace Bonsai.Mixer
     /// A source maintains an ordered queue of audio buffers played back through a single read
     /// cursor, scaled by a source gain and an independent per-channel gain, each of which can
     /// vary over time. The source is an opaque handle created by the mixer and controlled by
-    /// downstream operators that append buffers, set the gain, or stop playback.
+    /// downstream operators that append, clear or replace buffers, set the gain, or stop playback.
     /// </remarks>
     public unsafe class MixerSourceContext
     {
@@ -110,6 +110,38 @@ namespace Bonsai.Mixer
         public void Clear(double fadeDuration)
         {
             commandQueue.Add(() => BeginClear(fadeDuration));
+        }
+
+        /// <summary>
+        /// Replaces the source playback queue with a single audio buffer, fading the queued audio
+        /// to silence over the specified duration before the new buffer starts playing.
+        /// </summary>
+        /// <remarks>
+        /// The queue is discarded as in <see cref="Clear"/> and the new buffer is queued in the
+        /// same step. The new buffer starts from its first sample once the fade completes, or as
+        /// soon as the queued audio runs out, and never overlaps the audio it replaces.
+        /// </remarks>
+        /// <param name="buffer">
+        /// A multi-dimensional array containing the sample data, where each row holds the samples
+        /// for one channel. A single-row buffer is played as a mono source and distributed across
+        /// the output channels by the per-channel gain.
+        /// </param>
+        /// <param name="fadeDuration">
+        /// The length of the fade-out, in seconds. A duration of zero discards the queue immediately.
+        /// </param>
+        /// <exception cref="ArgumentNullException">The buffer is null.</exception>
+        /// <exception cref="ArgumentException">
+        /// The number of rows is neither one nor the number of channels in the stream, the buffer
+        /// contains no samples, or the sample depth is not 32-bit floating point.
+        /// </exception>
+        public void Replace(Mat buffer, double fadeDuration)
+        {
+            Validate(buffer);
+            commandQueue.Add(() =>
+            {
+                BeginClear(fadeDuration);
+                sourceBuffers.Add(buffer);
+            });
         }
 
         void BeginClear(double fadeDuration)
