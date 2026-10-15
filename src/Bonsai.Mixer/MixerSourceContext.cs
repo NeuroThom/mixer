@@ -22,11 +22,14 @@ namespace Bonsai.Mixer
         readonly RingList<Mat> sourceBuffers = new();
         readonly WorkQueue<Action> commandQueue = new();
         readonly LinearRamp sourceGain;
+        readonly LinearRamp transitionGain;
         readonly LinearRamp[] channelGains;
         readonly BehaviorSubject<MixerSourceState> playbackState;
 
         int bufferIndex;
         int sampleIndex;
+        int clearCount;
+        bool clearing;
         bool stopping;
         bool playing;
         MixerSourceState currentState;
@@ -41,6 +44,7 @@ namespace Bonsai.Mixer
             currentState = reportedState = playing ? MixerSourceState.Playing : MixerSourceState.Paused;
             playbackState = new BehaviorSubject<MixerSourceState>(currentState);
             sourceGain = new LinearRamp(sampleRate, initialGain);
+            transitionGain = new LinearRamp(sampleRate, 1f);
             channelGains = new LinearRamp[channelCount];
             for (int i = 0; i < channelCount; i++)
                 channelGains[i] = new LinearRamp(sampleRate, 1f);
@@ -89,6 +93,48 @@ namespace Bonsai.Mixer
         {
             Validate(buffer);
             commandQueue.Add(() => sourceBuffers.Add(buffer));
+        }
+
+        /// <summary>
+        /// Clears the source playback queue, fading the queued audio to silence over the
+        /// specified duration before it is discarded.
+        /// </summary>
+        /// <remarks>
+        /// Every buffer queued when the command is processed is discarded, including the one
+        /// currently playing, while buffers appended afterwards are kept and start playing once
+        /// the fade completes. Unlike <see cref="Stop"/>, the source stays on the mixer.
+        /// </remarks>
+        /// <param name="fadeDuration">
+        /// The length of the fade-out, in seconds. A duration of zero discards the queue immediately.
+        /// </param>
+        public void Clear(double fadeDuration)
+        {
+            commandQueue.Add(() => BeginClear(fadeDuration));
+        }
+
+        void BeginClear(double fadeDuration)
+        {
+            clearing = true;
+            clearCount = sourceBuffers.Count;
+            transitionGain.SetTarget(0f, fadeDuration);
+        }
+
+        void CompleteClear()
+        {
+            sourceBuffers.RemoveRange(clearCount);
+            bufferIndex = 0;
+            sampleIndex = 0;
+            clearCount = 0;
+            clearing = false;
+            transitionGain.SetTarget(1f, 0);
+        }
+
+        int PlayableCount => clearing ? clearCount : sourceBuffers.Count;
+
+        bool IsExhausted()
+        {
+            var playableCount = PlayableCount;
+            return bufferIndex >= playableCount && !(looping && playableCount > 0);
         }
 
         /// <summary>
@@ -236,6 +282,8 @@ namespace Bonsai.Mixer
                 if (stopping)
                     return PaStreamCallbackResult.Complete;
 
+                if (clearing)
+                    CompleteClear();
                 currentState = MixerSourceState.Paused;
                 return PaStreamCallbackResult.Continue;
             }
@@ -243,14 +291,24 @@ namespace Bonsai.Mixer
             int frame = 0;
             float* sourceGainBuffer = render.SourceGainBuffer;
             float* channelGainBuffer = render.ChannelGainBuffer;
+            float* transitionGainBuffer = render.TransitionGainBuffer;
             while (frame < frameCount)
             {
-                if (bufferIndex >= sourceBuffers.Count)
+                if (clearing && transitionGain.IsCompleted)
+                    CompleteClear();
+
+                var playableCount = PlayableCount;
+                if (bufferIndex >= playableCount)
                 {
-                    if (looping && sourceBuffers.Count > 0)
+                    if (looping && playableCount > 0)
                     {
                         bufferIndex = 0;
                         sampleIndex = 0;
+                    }
+                    else if (clearing)
+                    {
+                        CompleteClear();
+                        continue;
                     }
                     else break;
                 }
@@ -264,7 +322,15 @@ namespace Bonsai.Mixer
 
                 var available = bufferColumns - sampleIndex;
                 var count = Math.Min(Math.Min(available, (int)frameCount - frame), RenderContext.BlockSize);
-                sourceGain.Generate(new Span<float>(sourceGainBuffer, count));
+                if (clearing)
+                {
+                    count = Math.Min(count, transitionGain.RemainingSamples);
+                    sourceGain.Generate(new Span<float>(sourceGainBuffer, count));
+                    transitionGain.Generate(new Span<float>(transitionGainBuffer, count));
+                    for (int i = 0; i < count; i++)
+                        sourceGainBuffer[i] *= transitionGainBuffer[i];
+                }
+                else sourceGain.Generate(new Span<float>(sourceGainBuffer, count));
 
                 for (int channel = 0; channel < channelCount; channel++)
                 {
@@ -290,10 +356,18 @@ namespace Bonsai.Mixer
             if (!looping && !removeOnComplete && bufferIndex > 0)
             {
                 sourceBuffers.RemoveRange(bufferIndex);
+                if (clearing)
+                    clearCount -= bufferIndex;
                 bufferIndex = 0;
             }
 
-            var exhausted = bufferIndex >= sourceBuffers.Count && !(looping && sourceBuffers.Count > 0);
+            var exhausted = IsExhausted();
+            if (clearing && exhausted)
+            {
+                CompleteClear();
+                exhausted = IsExhausted();
+            }
+
             if (stopping)
             {
                 if (sourceGain.IsCompleted || exhausted)
