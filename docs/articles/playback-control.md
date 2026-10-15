@@ -4,7 +4,7 @@ uid: playback-control
 
 # Playback control
 
-Once a source handle is available, three operators control its playback, and one reports what state it is in. Each control operator queues its command onto the source, so the change takes effect on the next audio callback rather than instantly on the workflow thread.
+Once a source handle is available, three operators control its playback, two manage its queue and one reports what state it is in. Each control operator queues its command onto the source, so the change takes effect on the next audio callback rather than instantly on the workflow thread.
 
 ## Playing, pausing, and stopping
 
@@ -20,13 +20,36 @@ The workflow below plays a looping source, pauses it after two seconds, and resu
 ![Pausing and resuming a source](~/workflows/playback-control-pause-resume.bonsai)
 :::
 
+## Clearing and replacing queued audio
+
+Two operators discard what a source has queued without removing the source itself.
+
+- [`ClearBuffers`] discards every buffer queued on the source at the time the command is processed, including the one currently playing. The `FadeDuration` property, 20 milliseconds by default, fades the queued audio to silence first, since a cut mid-waveform can produce an audible click. A duration of zero discards the queue immediately.
+- [`ReplaceBuffer`] does the same and queues a new buffer in the same step. No other buffer can be queued between the clear and the replacement, and the new buffer starts from its first sample on the sample after the fade ends.
+
+Unlike [`StopSource`], both operators leave the source on the mixer with its gain, looping and playing settings intact. Buffers appended after the command are kept and start playing once the fade completes, or as soon as the queued audio runs out if that happens first. A paused source is cleared immediately, without fading. The playback state stays `Playing` during the fade, then reports `Idle` if nothing is left to play.
+
+The old audio fades out, and only then does the new buffer start at full level. The two never overlap, which keeps the onset of the new sound exactly as it was built, and matters when a buffer carries its own envelope or a synchronisation edge.
+
+The workflow below plays a looping tone, clears it after two seconds and appends a higher tone two seconds later. The gap between the fade and the new tone is silence, since nothing is queued.
+
+:::workflow
+![Clearing a source and appending a new buffer](~/workflows/playback-control-clear.bonsai)
+:::
+
+The next workflow replaces the looping tone with a higher one after two seconds. The new tone starts as soon as the fade ends.
+
+:::workflow
+![Replacing the queued buffer of a source](~/workflows/playback-control-replace.bonsai)
+:::
+
 ## Playback states
 
 [`PlaybackState`] reports the state of each source, emitting its current value on subscription and on every subsequent transition, and completing when the source is removed. The state is a [`MixerSourceState`]:
 
 - `Playing`: the source is moving through its queued buffers.
 - `Paused`: the source is holding its position without contributing to the output.
-- `Idle`: the source is still playing but out of samples. A non-looping source reaches this state once its queue empties, and goes back to `Playing` if more buffers are appended.
+- `Idle`: the source is still playing but out of samples. A non-looping source reaches this state once its queue empties, as does any source once its queue is cleared, and goes back to `Playing` if more buffers are appended.
 - `Stopped`: the source has been removed from the mixer. This is the final state, and it completes the sequence.
 
 State changes are reported off the audio thread, so observing or logging them does not affect audio timing. See [how the mixer works](xref:audio-model).
@@ -38,5 +61,7 @@ Creating a source with `Playing` set to false, appending its buffer, and startin
 [`PlaySource`]: xref:Bonsai.Mixer.PlaySource
 [`PauseSource`]: xref:Bonsai.Mixer.PauseSource
 [`StopSource`]: xref:Bonsai.Mixer.StopSource
+[`ClearBuffers`]: xref:Bonsai.Mixer.ClearBuffers
+[`ReplaceBuffer`]: xref:Bonsai.Mixer.ReplaceBuffer
 [`PlaybackState`]: xref:Bonsai.Mixer.PlaybackState
 [`MixerSourceState`]: xref:Bonsai.Mixer.MixerSourceState
