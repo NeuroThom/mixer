@@ -58,6 +58,12 @@ State changes are reported off the audio thread, so observing or logging them do
 
 Creating a source with `Playing` set to false, appending its buffer, and starting it with [`PlaySource`] on an external cue prepares the sound in advance. The cue-to-audio delay is then just the output latency rather than the cost of building the buffer. This is the arm-then-trigger pattern.
 
+The workflow below creates a paused source, appends a tone to it straight away and starts it two seconds later, where the delay stands in for the cue.
+
+:::workflow
+![Arming a source and triggering it on a cue](~/workflows/playback-control-arm-trigger.bonsai)
+:::
+
 [`PlaySource`]: xref:Bonsai.Mixer.PlaySource
 [`PauseSource`]: xref:Bonsai.Mixer.PauseSource
 [`StopSource`]: xref:Bonsai.Mixer.StopSource
