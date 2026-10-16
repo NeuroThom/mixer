@@ -17,6 +17,7 @@ namespace Bonsai.Mixer
     public unsafe class MixerSourceContext
     {
         readonly int channelCount;
+        readonly double sampleRate;
         readonly bool looping;
         readonly bool removeOnComplete;
         readonly RingList<Mat> sourceBuffers = new();
@@ -29,6 +30,8 @@ namespace Bonsai.Mixer
         int bufferIndex;
         int sampleIndex;
         int clearCount;
+        int gapSamples;
+        int gapRemaining;
         bool clearing;
         bool stopping;
         bool playing;
@@ -38,6 +41,7 @@ namespace Bonsai.Mixer
         internal MixerSourceContext(int channelCount, double sampleRate, Mat initialBuffer, bool looping, bool playing, float initialGain, bool removeOnComplete)
         {
             this.channelCount = channelCount;
+            this.sampleRate = sampleRate;
             this.looping = looping;
             this.playing = playing;
             this.removeOnComplete = removeOnComplete;
@@ -136,19 +140,63 @@ namespace Bonsai.Mixer
         /// </exception>
         public void Replace(Mat buffer, double fadeDuration)
         {
+            Replace(buffer, fadeDuration, 0);
+        }
+
+        /// <summary>
+        /// Replaces the source playback queue with a single audio buffer, fading the queued audio
+        /// to silence over the specified duration and holding a gap of silence before the new
+        /// buffer starts playing.
+        /// </summary>
+        /// <remarks>
+        /// The queue is discarded as in <see cref="Replace(Mat, double)"/>. The gap starts on the
+        /// sample after the fade completes, or after the queued audio runs out if that happens
+        /// first, and the new buffer starts from its first sample once the gap has elapsed. The gap
+        /// is played only once, even on a looping source. If the source is paused during the gap,
+        /// the countdown stops and the rest of the gap plays when playback resumes.
+        /// A clear or replace arriving during the gap discards the waiting buffer immediately,
+        /// since there is nothing audible to fade.
+        /// </remarks>
+        /// <param name="buffer">
+        /// A multi-dimensional array containing the sample data, where each row holds the samples
+        /// for one channel. A single-row buffer is played as a mono source and distributed across
+        /// the output channels by the per-channel gain.
+        /// </param>
+        /// <param name="fadeDuration">
+        /// The length of the fade-out, in seconds. A duration of zero discards the queue immediately.
+        /// </param>
+        /// <param name="gapDuration">
+        /// The length of the silence between the end of the fade-out and the start of the new
+        /// buffer, in seconds. A duration of zero starts the new buffer as soon as the fade ends.
+        /// </param>
+        /// <exception cref="ArgumentNullException">The buffer is null.</exception>
+        /// <exception cref="ArgumentException">
+        /// The number of rows is neither one nor the number of channels in the stream, the buffer
+        /// contains no samples, or the sample depth is not 32-bit floating point.
+        /// </exception>
+        public void Replace(Mat buffer, double fadeDuration, double gapDuration)
+        {
             Validate(buffer);
+            var gapSamples = (int)Math.Max(0, gapDuration * sampleRate);
             commandQueue.Add(() =>
             {
-                BeginClear(fadeDuration);
+                BeginClear(fadeDuration, gapSamples);
                 sourceBuffers.Add(buffer);
             });
         }
 
-        void BeginClear(double fadeDuration)
+        void BeginClear(double fadeDuration, int gapSamples = 0)
         {
             clearing = true;
             clearCount = sourceBuffers.Count;
-            transitionGain.SetTarget(0f, fadeDuration);
+            this.gapSamples = gapSamples;
+            if (gapRemaining > 0)
+            {
+                // nothing is audible during a gap and the waiting buffer is dropped at once
+                gapRemaining = 0;
+                transitionGain.SetTarget(0f, 0);
+            }
+            else transitionGain.SetTarget(0f, fadeDuration);
         }
 
         void CompleteClear()
@@ -158,6 +206,8 @@ namespace Bonsai.Mixer
             sampleIndex = 0;
             clearCount = 0;
             clearing = false;
+            gapRemaining = gapSamples;
+            gapSamples = 0;
             transitionGain.SetTarget(1f, 0);
         }
 
@@ -328,6 +378,19 @@ namespace Bonsai.Mixer
             {
                 if (clearing && transitionGain.IsCompleted)
                     CompleteClear();
+
+                if (gapRemaining > 0)
+                {
+                    // the gap plays as silence: nothing is written to the output while the gain
+                    // ramps keep advancing and fades and stops still run to time
+                    var silence = Math.Min(Math.Min(gapRemaining, (int)frameCount - frame), RenderContext.BlockSize);
+                    sourceGain.Generate(new Span<float>(sourceGainBuffer, silence));
+                    for (int channel = 0; channel < channelCount; channel++)
+                        channelGains[channel].Generate(new Span<float>(channelGainBuffer + channel * RenderContext.BlockSize, silence));
+                    gapRemaining -= silence;
+                    frame += silence;
+                    continue;
+                }
 
                 var playableCount = PlayableCount;
                 if (bufferIndex >= playableCount)

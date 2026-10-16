@@ -12,7 +12,8 @@ namespace Bonsai.Mixer
     /// </summary>
     /// <remarks>
     /// The queued audio fades out before the new buffer starts, as in <see cref="ClearBuffers"/>,
-    /// and the two never overlap.
+    /// and the two never overlap. An optional gap of silence can be held between the end of the
+    /// fade and the start of the new buffer.
     /// </remarks>
     [Combinator]
     [Description("Replaces the playback queue of every mixer source in the second sequence with each audio buffer from the first sequence, fading out the queued audio over a specified duration.")]
@@ -29,9 +30,21 @@ namespace Bonsai.Mixer
         public double FadeDuration { get; set; } = 0.02;
 
         /// <summary>
+        /// Gets or sets the duration of the silence between the end of the fade-out and the start
+        /// of the new buffer, in seconds.
+        /// </summary>
+        /// <remarks>
+        /// The gap is measured in samples from the end of the fade, or from the moment the queued
+        /// audio ran out if that came first, and is played only once even on a looping source.
+        /// The default of zero starts the new buffer as soon as the fade ends.
+        /// </remarks>
+        [Description("The duration of the silence between the end of the fade-out and the start of the new buffer, in seconds. A value of zero starts the new buffer as soon as the fade ends.")]
+        public double GapDuration { get; set; }
+
+        /// <summary>
         /// Replaces the playback queue of every mixer source in an observable sequence with each
         /// audio buffer from a second sequence, fading out the queued audio over the specified
-        /// duration.
+        /// duration and holding the specified gap of silence before the new buffer starts.
         /// </summary>
         /// <param name="source">
         /// A sequence of <see cref="Mat"/> objects representing the audio buffers that replace
@@ -48,7 +61,7 @@ namespace Bonsai.Mixer
         /// </returns>
         public IObservable<Mat> Process(IObservable<Mat> source, IObservable<MixerSourceContext> mixerSource)
         {
-            return mixerSource.SelectMany(context => source.Do(buffer => context.Replace(buffer, FadeDuration)));
+            return mixerSource.SelectMany(context => source.Do(buffer => context.Replace(buffer, FadeDuration, GapDuration)));
         }
     }
 }
