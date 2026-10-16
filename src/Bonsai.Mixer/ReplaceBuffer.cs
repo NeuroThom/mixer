@@ -35,7 +35,7 @@ namespace Bonsai.Mixer
         /// </summary>
         /// <remarks>
         /// The gap is measured in samples from the end of the fade, or from the moment the queued
-        /// audio ran out if that came first, and is played only once even on a looping source.
+        /// audio ran out if that came first. It is played only once, even on a looping source.
         /// The default of zero starts the new buffer as soon as the fade ends.
         /// </remarks>
         [Description("The duration of the silence between the end of the fade-out and the start of the new buffer, in seconds. A value of zero starts the new buffer as soon as the fade ends.")]

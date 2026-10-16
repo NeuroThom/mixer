@@ -29,7 +29,7 @@ Two operators discard what a source has queued without removing the source itsel
 
 Unlike [`StopSource`], both operators leave the source on the mixer with its gain, looping and playing settings intact. Buffers appended after the command are kept and start playing once the fade completes, or as soon as the queued audio runs out if that happens first. A paused source is cleared immediately, without fading. The playback state stays `Playing` during the fade, then reports `Idle` if nothing is left to play.
 
-The old audio fades out, and only then does the new buffer start at full level. The two never overlap, which keeps the onset of the new sound exactly as it was built, and matters when a buffer carries its own envelope or a synchronisation edge.
+The old audio fades out, and only then does the new buffer start at full level. The two never overlap. This keeps the onset of the new sound exactly as it was built, which matters when a buffer carries its own envelope or a synchronisation edge.
 
 The workflow below plays a looping tone, clears it after two seconds and appends a higher tone two seconds later. The gap between the fade and the new tone is silence, since nothing is queued.
 
@@ -43,13 +43,17 @@ The next workflow replaces the looping tone with a higher one after two seconds.
 ![Replacing the queued buffer of a source](~/workflows/playback-control-replace.bonsai)
 :::
 
+[`ReplaceBuffer`] can also insert a gap of silence before the new buffer. The `GapDuration` property, zero by default, sets its length in seconds. The gap is counted in samples from the end of the fade, or from when the queued audio ran out if that came first. It plays once, even on a looping source. Pausing the source during the gap stops its countdown until playback resumes. The playback state stays `Playing` throughout, and a clear or replace during the gap discards the waiting buffer at once.
+
+In the workflow above, try changing the `GapDuration` property of the [`ReplaceBuffer`] operator.
+
 ## Playback states
 
 [`PlaybackState`] reports the state of each source, emitting its current value on subscription and on every subsequent transition, and completing when the source is removed. The state is a [`MixerSourceState`]:
 
 - `Playing`: the source is moving through its queued buffers.
 - `Paused`: the source is holding its position without contributing to the output.
-- `Idle`: the source is still playing but out of samples. A non-looping source reaches this state once its queue empties, as does any source once its queue is cleared, and goes back to `Playing` if more buffers are appended.
+- `Idle`: the source is still playing but out of samples. A non-looping source reaches this state once its queue empties, as does any source once its queue is cleared. It goes back to `Playing` if more buffers are appended.
 - `Stopped`: the source has been removed from the mixer. This is the final state, and it completes the sequence.
 
 State changes are reported off the audio thread, so observing or logging them does not affect audio timing. See [how the mixer works](xref:audio-model).

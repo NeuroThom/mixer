@@ -123,7 +123,7 @@ namespace Bonsai.Mixer
         /// <remarks>
         /// The queue is discarded as in <see cref="Clear"/> and the new buffer is queued in the
         /// same step. The new buffer starts from its first sample once the fade completes, or as
-        /// soon as the queued audio runs out, and never overlaps the audio it replaces.
+        /// soon as the queued audio runs out. It never overlaps the audio it replaces.
         /// </remarks>
         /// <param name="buffer">
         /// A multi-dimensional array containing the sample data, where each row holds the samples
